@@ -10,14 +10,15 @@
 #
 # SCHEDULES (Nepal Time = UTC + 5:45, so 23:59 Nepal = 18:14 UTC):
 #   • Daily at 23:59 Nepal Time (18:14 UTC) — fetch NEW movies that appeared
-#     in the FilmyFly sitemap since the last run, save their traces,
-#     regenerate the catalog, push to private repo → Vercel auto-deploys.
+#     in the FilmyFly sitemap since the last run, save their traces (with
+#     poster + screenshot + mirrors), regenerate the catalog, push to
+#     private repo → Vercel auto-deploys.
 #   • Friday at 23:59 Nepal Time (18:14 UTC Friday) — refresh ALL fffast
-#     download tokens (they expire after ~8 days), regenerate the catalog,
-#     push → Vercel auto-deploys.
+#     download tokens (they expire after ~8 days), backfill screenshots for
+#     any movies missing them, regenerate the catalog, push → Vercel auto-deploys.
 #
-# MANUAL DISPATCH: choose "new-movies", "refresh-links", or "both" via the
-# workflow_dispatch input.
+# MANUAL DISPATCH: choose "new-movies", "refresh-links", "screenshots-only",
+# or "both" via the workflow_dispatch input.
 #
 # SECRETS REQUIRED (set in repo settings → Secrets and variables → Actions):
 #   PRIVATE_REPO_PAT   — GitHub PAT with repo scope on hinduaichat/elora-tv
@@ -25,16 +26,13 @@
 #
 # No Vercel token needed — the private repo's Vercel project has GitHub
 # integration enabled, so every push to main auto-triggers a production deploy.
-#
-# No secrets or API keys are ever written to this file. All sensitive values
-# are referenced via ${{ secrets.* }} which GitHub masks in logs.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Elora Auto-Update
 
 on:
   schedule:
     - cron: '14 18 * * *'        # Daily at 23:59 Nepal Time (18:14 UTC) — fetch new movies
-    - cron: '14 18 * * 5'        # Friday at 23:59 Nepal Time (18:14 UTC Fri) — refresh all links
+    - cron: '14 18 * * 5'        # Friday at 23:59 Nepal Time (18:14 UTC Fri) — refresh all + backfill screenshots
   workflow_dispatch:
     inputs:
       mode:
@@ -45,6 +43,7 @@ on:
         options:
           - new-movies
           - refresh-links
+          - screenshots-only
           - both
       limit:
         description: 'Max movies to process (0 = unlimited)'
@@ -52,11 +51,9 @@ on:
         default: '100'
         type: string
 
-# Public repo only needs read access to itself
 permissions:
   contents: read
 
-# Cancel any in-progress run when a new one starts (don't waste minutes)
 concurrency:
   group: elora-auto-update
   cancel-in-progress: false
@@ -79,7 +76,7 @@ jobs:
           if [ "${{ github.event_name }}" = "schedule" ]; then
             SCHED="${{ github.event.schedule }}"
             if [ "$SCHED" = "14 18 * * 5" ]; then
-              echo "mode=both" >> $GITHUB_OUTPUT   # Friday = refresh all + fetch new
+              echo "mode=both" >> $GITHUB_OUTPUT   # Friday = refresh all + screenshots + new
             else
               echo "mode=new-movies" >> $GITHUB_OUTPUT  # Daily = only new movies
             fi
@@ -112,7 +109,8 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       # ─────────────────────────────────────────────────────────────────────
-      # Step: Fetch NEW movies that appeared in sitemap (runs daily + Friday)
+      # Daily — fetch NEW movies from FilmyFly sitemap
+      # (also extracts poster + screenshot + mirrors for each new movie)
       # ─────────────────────────────────────────────────────────────────────
       - name: Daily — fetch new movies from FilmyFly sitemap
         if: steps.mode.outputs.mode == 'new-movies' || steps.mode.outputs.mode == 'both'
@@ -123,9 +121,7 @@ jobs:
           python3 scripts/fetch_new_movies.py "$LIMIT" || echo "fetch had failures (non-fatal)"
 
       # ─────────────────────────────────────────────────────────────────────
-      # Step: Refresh ALL download links (runs Friday only)
-      # fffast tokens expire ~8 days after creation. Re-trace every movie to
-      # get fresh tokens so download links stay working through next Saturday.
+      # Friday — refresh ALL download links + backfill screenshots
       # ─────────────────────────────────────────────────────────────────────
       - name: Friday — refresh all download links
         if: steps.mode.outputs.mode == 'refresh-links' || steps.mode.outputs.mode == 'both'
@@ -135,7 +131,17 @@ jobs:
           python3 scripts/refresh_all_links.py || echo "refresh had failures (non-fatal)"
 
       # ─────────────────────────────────────────────────────────────────────
-      # Step: Regenerate movies-data.ts catalog with fresh sitemap_index
+      # Backfill screenshots — add screenshot_url to any trace missing it
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Backfill screenshots for movies missing them
+        if: steps.mode.outputs.mode == 'refresh-links' || steps.mode.outputs.mode == 'both' || steps.mode.outputs.mode == 'screenshots-only'
+        run: |
+          cd repo
+          echo "=== Backfilling screenshots (parallel, 20 workers) ==="
+          python3 scripts/backfill_screenshots.py --workers=20 || echo "backfill had failures (non-fatal)"
+
+      # ─────────────────────────────────────────────────────────────────────
+      # Regenerate movies-data.ts catalog (includes screenshot_url field)
       # ─────────────────────────────────────────────────────────────────────
       - name: Regenerate catalog (movies-data.ts)
         run: |
@@ -144,9 +150,7 @@ jobs:
           python3 scripts/generate_movies_data.py
 
       # ─────────────────────────────────────────────────────────────────────
-      # Step: Commit & push to PRIVATE repo.
-      # The push to main triggers Vercel auto-deploy via the project's GitHub
-      # integration (configured in Vercel dashboard). No Vercel token needed.
+      # Commit & push to PRIVATE repo — triggers Vercel auto-deploy
       # ─────────────────────────────────────────────────────────────────────
       - name: Commit & push to private repo (auto-triggers Vercel deploy)
         run: |
@@ -158,7 +162,6 @@ jobs:
             Triggered by: hinduaichat/elora-tv-actions/.github/workflows/auto-update.yml
             Run: ${{ github.run_id }}
             Mode: ${{ steps.mode.outputs.mode }}" || true
-            # Push using the PAT (token stripped from any error messages)
             git push https://x-access-token:${{ secrets.PRIVATE_REPO_PAT }}@github.com/hinduaichat/elora-tv.git HEAD:main 2>&1 | sed "s|x-access-token:[^@]*@|x-access-token:***@|g" || echo "push failed (non-fatal)"
             echo "✓ Pushed to private repo → Vercel will auto-deploy from main"
           else
