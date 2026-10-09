@@ -20,12 +20,12 @@ Only **`.github/workflows/auto-update.yml`** — a single workflow file that:
    - `refresh_all_links.py` — refreshes all fffast download tokens (they expire after ~8 days)
    - `generate_movies_data.py` — regenerates the catalog with sitemap_index
 3. Commits + pushes the updated traces and catalog back to the private repo
-4. Triggers a Vercel production deploy
+4. The push to `main` triggers Vercel auto-deploy via the project's GitHub integration (configured in Vercel dashboard — no Vercel token needed here)
 
-## Schedules
+## Schedules (Nepal Time = UTC + 5:45, so 23:59 Nepal = 18:14 UTC)
 
-- **Daily at 00:00 UTC** — fetch new movies from the FilmyFly sitemap
-- **Friday at 00:00 UTC** — refresh all download links (tokens expire ~8 days)
+- **Daily at 23:59 Nepal Time** (18:14 UTC) — fetch new movies from the FilmyFly sitemap
+- **Friday at 23:59 Nepal Time** (18:14 UTC Friday) — refresh all download links (tokens expire ~8 days, so Friday refresh keeps them valid through next Saturday)
 
 Both can also be triggered manually via `workflow_dispatch` with a `mode` input (`new-movies`, `refresh-links`, or `both`).
 
@@ -34,18 +34,16 @@ Both can also be triggered manually via `workflow_dispatch` with a `mode` input 
 | Secret name | Purpose |
 |---|---|
 | `PRIVATE_REPO_PAT` | GitHub PAT with `repo` scope on `hinduaichat/elora-tv` (used to checkout + push back) |
-| `VERCEL_TOKEN` | Vercel access token (used to trigger production deploys) |
-| `VERCEL_PROJECT_ID` | The Vercel project ID (e.g. `prj_xxxxxxxxxxxxx`) |
-| `VERCEL_ORG_ID` | The Vercel team/org ID (e.g. `team_xxxxxxxxxxxxx`) |
 
-No secrets are committed to this repo. All sensitive values are referenced via `${{ secrets.* }}` which GitHub masks in logs.
+That's it — just ONE secret. Vercel deploys happen automatically via the private repo's GitHub integration with Vercel (configured in the Vercel dashboard), so no Vercel token is needed in this public repo.
 
 ## Privacy & security
 
-- This repo is **public** but contains **no source code**, **no movie data**, **no API keys**
+- This repo is **public** but contains **no source code**, **no movie data**, **no API keys**, **no Vercel tokens**
 - The actual website code, trace files, and catalog live in the private `hinduaichat/elora-tv` repo
 - The workflow checks out the private repo only at runtime; no private data is ever committed here
-- All credentials live in GitHub Actions secrets (encrypted at rest, masked in logs)
+- The PAT is referenced via `${{ secrets.PRIVATE_REPO_PAT }}` which GitHub masks in logs
+- The git push command strips the token from any error messages via `sed`
 
 ## License
 
